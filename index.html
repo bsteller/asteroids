@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="ROBOTS" content="NOINDEX, NOFOLLOW">
+    <title>Asteroids</title>
+    <style>
+        html, body {height:100%;}
+        body {
+            /*background: black url("images/starfield.png") center center repeat;*/
+            background-color: white;
+            font-family: arial;
+            font-size: 1.1em;
+            min-width: 600px;
+            min-height: 800px;
+        }
+        * {
+            margin:0;
+            padding:0;
+            line-height: 1;
+        }
+        #canvas {
+            display: block;
+        }
+        #hud {
+            display: flex;
+            flex-direction: row;
+            background-color: black;
+            color: #cecece;
+            width: 350px;
+            position: absolute;
+            top: 0;
+            right: 0;
+            padding: 10px;
+        }
+        .label {
+            flex-grow: 1;
+        }
+        #hud div:last-child {
+            flex-shrink: 1;
+        }
+        #gamestart,
+        #gameover {
+            display: none;
+            flex-direction: column;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            z-index: 100;
+            background-color: black;
+            color: #cecece;
+            justify-content: center;
+            align-items: center;
+        }
+        #gamestart *,
+        #gameover * {
+            margin-bottom: 1em;
+            font-weight: normal;
+        }
+        #gamestart {
+            display: flex;
+        }
+        .btn {
+            color: #cecece;
+            font-weight: normal;
+            text-decoration: none;
+            border: 1px solid #cecece;
+            border-radius: 5px;
+            display: inline-block;
+            padding: .5em;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        <div class="label">Time: <span class="countdown counter">0</span></div>
+        <div class="label">Score: <span class="score counter">0</span></div>
+        <div class="label">Lives: <span id="lives" class="counter">3</span></div>
+    </div>
+
+    <div id="gameover">
+        <h1>Game Over</h1>
+        <h2>You <span id="result"></span>!</h2>
+        <h3>Score: <span class="score counter">0</span></h3>
+        <h3>Time elapsed: <span class="countdown counter">0</span> seconds</h3>
+        <h3><a href="#" id="replay" class="btn">Play Again</a></h3>
+    </div>
+
+    <div id="gamestart">
+        <h1>Asteroids!</h1>
+        <h3>Score 150 points in 150 seconds.</h3>
+        <h3>Left, right and up arrow keys to move.</h3>
+        <h3>f key to fire.</h3>
+        <h3><a href="#" id="play" class="btn">Play</a></h3>
+    </div>
+
+    <canvas id="canvas" width="600" height="800"></canvas>
+
+    <script src="SAT.js"></script>
+    <script>
+        /*---------------------------
+        This is by no means an original piece of work.
+        I borrowed heavily from around the web to learn the concepts behind canvas and HTML games.
+        Tutorials:
+        Adapted from https://codepen.io/aann/pen/rawvJe
+        https://www.html5rocks.com/en/tutorials/canvas/performance/
+        https://html5.litten.com/using-multiple-html5-canvases-as-layers/
+        https://gamedev.stackexchange.com/questions/58454/is-using-multiple-canvas-objects-a-good-practice
+        https://codeincomplete.com/posts/javascript-game-foundations-the-game-loop/
+        https://www.w3schools.com/graphics/canvas_reference.asp
+        https://www.w3schools.com/graphics/game_intro.asp
+        https://www.w3schools.com/tags/canvas_rotate.asp
+        https://github.com/jriecken/sat-js
+        ---------------------------*/
+        var P = SAT.Polygon;
+        var V = SAT.Vector;
+        var B = SAT.Box;
+        var game;
+        var ship;
+        var hudCountdown = document.querySelectorAll('.countdown');
+        var hudScore     = document.querySelectorAll('.score');
+        var hudResult    = document.getElementById('result');
+        var hudLives     = document.getElementById('lives');
+        var stage        = document.getElementById('canvas');
+        var play         = document.getElementById('play');
+        var replay       = document.getElementById('replay');
+        var gamestart    = document.getElementById('gamestart');
+        var gameover     = document.getElementById('gameover');
+
+        play.addEventListener('click', function(e) {
+            e.preventDefault();
+            init();
+            gamestart.style.display = 'none';
+        });
+        replay.addEventListener('click', function(e) {
+            e.preventDefault();
+            gameover.style.display = 'none';
+            gamestart.style.display = 'flex';
+        });
+
+        function Game() {
+            var frameID;
+            var now    = 0;
+            var dt     = 0;
+            var last   = 0;
+            var step   = 1/60;
+            var sec    = 0;
+            var engine = {
+                canvas: stage,
+                ctx: stage.getContext("2d"),
+                state: 'play',
+                lives: 3,
+                countdown: 0,
+                score: 0,
+                objects: [],
+                asteroidCount: function() {
+                    var r = engine.objects.filter(it => it.name == 'asteroid');
+                    return r.length;
+                }
+            };
+
+            // Prep game.
+            var load = function() {
+
+                resizeCanvasToWindow();
+                spawnAsteroids();
+                for (var i = 0; i < engine.objects.length; i++) {
+                    engine.objects[i].start();
+                }
+            };
+
+            // Game loop
+            var mainLoop = function(timestamp) {
+
+                if (timestamp == 0) {
+                    frameID = window.requestAnimationFrame(mainLoop);
+                    return;
+                }
+
+                // Approximate seconds.
+                if (sec >= 60) {
+                    sec = 0;
+                    updateHud();
+                    engine.countdown += 1;
+                }
+                else {
+                    sec += 1;
+                }
+
+                // Calculate delta and update.
+                now = timestamp;
+                dt = dt + Math.min(1, (now - last) / 1000);
+                while(dt > step) {
+                    dt = dt - step;
+                    update(step);
+                }
+                draw();
+                last = now;
+
+                // Game state
+                if (engine.state == 'gameover') {
+                    window.cancelAnimationFrame(frameID);
+                }
+                else if (engine.state == 'unload') {
+                    frameID = window.requestAnimationFrame(mainLoop);
+                }
+                else if (engine.countdown >= 151 || engine.asteroidCount() == 0) {
+                    window.cancelAnimationFrame(frameID);
+                    stop();
+                }
+                else if (engine.state == 'play') {
+                    frameID = window.requestAnimationFrame(mainLoop);
+                }
+                else if (engine.state == 'respawn') {
+                    window.cancelAnimationFrame(frameID);
+                    respawn();
+                }
+            };
+
+            var update = function(delta) {
+
+                // Delete unused objects
+                for (var i=engine.objects.length-1; i >=0; i--) {
+                    if (engine.objects[i].delete) {
+                        engine.objects.splice(i, 1);
+                    }
+                }
+
+                // Update objects
+                for (var i=0; i < engine.objects.length; i++) {
+                    engine.objects[i].update(engine.ctx, delta);
+                }
+            };
+
+            var draw = function() {
+
+                // Clear canvas
+                engine.ctx.clearRect(0, 0, engine.canvas.width, engine.canvas.height);
+
+                // Draw objects
+                for (var i=0; i < engine.objects.length; i++) {
+                    engine.objects[i].draw(engine.ctx);
+                }
+            };
+
+            var respawn = function() {
+
+                if (engine.lives > 0) {
+                    ship = new Ship();
+                    ship.start();
+                    engine.objects.push(ship);
+                    engine.state = 'play';
+                    frameID = window.requestAnimationFrame(mainLoop);
+                }
+                else {
+                    stop();
+                }
+            };
+
+            var stop = function() {
+
+                window.setTimeout(function() {
+                    engine.state = 'gameover';
+                    if (engine.lives == 0) {
+                        result.innerHTML = 'lost';
+                    }
+                    else if (engine.countdown >= 151 && engine.score < 150) {
+                        result.innerHTML = 'lost';
+                    }
+                    else {
+                        result.innerHTML = 'won';
+                    }
+                    updateHud();
+                    engine.objects = [];
+                    ship = null;
+                    game = null;
+                    gameover.style.display = 'flex';
+                }, 1500);
+
+                engine.state = 'unload';
+                frameID = window.requestAnimationFrame(mainLoop);
+            };
+
+            engine.start = function() {
+                load();
+                mainLoop(0);
+            };
+
+            return engine;
+        }
+
+        function Ship() {
+
+            var self        = this;
+            var base        = {x: 25, y: 25};
+            var image       = new Image();
+            var forcefield  = true;
+            image.src       = "images/player.png";
+            self.name       = 'ship';
+            self.delete     = false;
+            self.position   = {x: 0, y: 0};
+            self.velocity   = {x: 0, y: 0};
+            self.width      = 50;
+            self.height     = 50;
+            self.rotation   = 0;
+            self.accelerate = false;
+
+            self.update = function(ctx, delta) {
+
+                // update velocity
+                if (self.accelerate) {
+                    self.velocity.x -= Math.sin(-self.rotation*Math.PI/180) * 0.3;
+                    self.velocity.y -= Math.cos(-self.rotation*Math.PI/180) * 0.3;
+                }
+
+                // update position
+                self.position.x += self.velocity.x;
+                self.position.y += self.velocity.y;
+
+                // apply friction
+                self.velocity.x *= 0.98;
+                self.velocity.y *= 0.98;
+
+                // keep ship in-screen
+                if ((self.position.y + self.height) < 0) {
+                    self.position.y = game.canvas.height + base.y;
+                }
+                else if ((self.position.y - self.height) > game.canvas.height) {
+                    self.position.y = -base.y;
+                }
+                else if ((self.position.x + self.width) < 0) {
+                    self.position.x = game.canvas.width + base.x;
+                }
+                else if ((self.position.x - self.width) > game.canvas.width) {
+                    self.position.x = -base.x;
+                }
+
+                var explode = function(shp) {
+                        var ex = new Burst({
+                            position: shp.position,
+                            color: '#0000ff'
+                        });
+                        ex.start();
+                        shp.delete = true;
+                        game.lives -= 1;
+                        game.state = 'respawn';
+                        game.objects.push(ex);
+                };
+
+                // Detect asteroid collision only if the forcefield is off.
+                if (! forcefield) {
+                    for(var i=0,j=game.objects.length; i<j; i++) {
+                        var rock = game.objects[i];
+                        if (rock.name == 'asteroid') {
+                            var shipPos = new B(new V(self.position.x, self.position.y), self.width-5, self.height-5).toPolygon();
+                            var rockPos = new P(new V(rock.position.x, rock.position.y), rock.points);
+                            var response = new SAT.Response();
+                            var collided = SAT.testPolygonPolygon(shipPos, rockPos, response);
+                            if (collided) {
+                                explode(self);
+                                break;
+                            }
+                            bulletPos = shipPos = response = null;
+                        }
+                    }
+                }
+            };
+
+            self.draw = function(ctx) {
+
+                // I'm not using rotatePoint() here because I wanted to see how to do it myself.
+                ctx.save();
+                ctx.translate(self.position.x + base.x, self.position.y + base.y);
+                ctx.rotate(self.rotation * Math.PI/180);
+                ctx.drawImage(image, -base.x, -base.y, self.width, self.height);
+                ctx.restore();
+
+                if (forcefield) {
+                    ctx.beginPath();
+                    ctx.arc(self.position.x + base.x, self.position.y + base.y, 100, 0, 2 * Math.PI);
+                    ctx.lineWidth = 5;
+                    ctx.strokeStyle = 'yellow';
+                    ctx.shadowBlur = 2;
+                    ctx.stroke();
+
+                    // reset otherwise Burst is the wrong color.
+                    ctx.lineWidth = 1;
+                    ctx.shadowBlur = 5;
+                }
+            };
+
+            self.start = function(ctx, delta) {
+                window.setTimeout(function() { forcefield = false; }, 2000);
+                self.position.x = game.canvas.width/2;
+                self.position.y = game.canvas.height/2;
+            };
+
+            self.fire = function() {
+                var bullet = new Bullet();
+                bullet.start();
+                game.objects.push(bullet);
+            };
+
+            return self;
+        }
+
+        function Burst(options) {
+
+            var length = options.length || 10;
+            var count  = options.count || 36;
+            var color  = options.color || "#ff0000";
+            var name   = options.name || "burst";
+            var pos    = options.position || {x:0,y:0};
+            var speed  = options.speed || 10;
+
+            var obj = {
+                delete: false,
+                radius: 0,
+                count: count,
+                color: color,
+                name: name,
+                position: pos,
+                length: length
+            };
+
+            obj.start = function() {};
+            obj.update = function() {
+                this.radius += speed;
+                if (this.radius > game.canvas.width || this.radius > game.canvas.height) {
+                    this.delete = true;
+                }
+            };
+            obj.draw = function(ctx) {
+                ctx.save();
+                ctx.translate(this.position.x, this.position.y);
+                ctx.beginPath();
+                for (var i = 0; i < this.count; i++) {
+                    var v1 = rotatePoint({x:0, y:this.radius}, {x:0,y:0}, 2/this.count*i*Math.PI);
+                    var v2 = rotatePoint({x:0, y:this.radius+this.length}, {x:0,y:0}, 2/this.count*i*Math.PI);
+                    ctx.moveTo(v1.x, v1.y);
+                    ctx.lineTo(v2.x, v2.y);
+                }
+                ctx.closePath();
+                ctx.strokeStyle = this.color;
+                ctx.shadowColor = this.color;
+                ctx.shadowBlur = 5;
+                ctx.stroke();
+                ctx.restore();
+            };
+            return obj;
+        }
+
+        function Bullet() {
+
+            var bul = new Polygon({
+                points: [
+                    {x:0, y:0},
+                    {x:0, y:-5}
+                ],
+                size: {x:10, y:15},
+                base: {x:5, y:10},
+                color: "#ff0000",
+                name: "bullet"
+            });
+
+            bul.update = function(ctx, delta) {
+                // Move
+                var self = this;
+                self.position.x += self.velocity.x + ship.velocity.x;
+                self.position.y += self.velocity.y + ship.velocity.y;
+
+                var explode = function(astrd) {
+                    var r = astrd.radius/2;
+
+                    if (r > 10) {
+                        var a1 = new Asteroid(r);
+                        var a2 = new Asteroid(r);
+
+                        a1.start();
+                        a2.start();
+
+                        a1.velocity = rotatePoint(astrd.velocity, {x:0,y:0}, 10*Math.PI/180);
+                        a2.velocity = rotatePoint(astrd.velocity, {x:0,y:0}, 360-10*Math.PI/180);
+
+                        a1.position = {x: astrd.position.x + a1.velocity.x, y: astrd.position.y + a1.velocity.y};
+                        a2.position = {x: astrd.position.x + a2.velocity.x, y: astrd.position.y + a2.velocity.y};
+
+                        game.objects.push(a1, a2);
+                    }
+                    else {
+                        var ex = new Burst({ position: astrd.position });
+                        ex.start();
+                        game.objects.push(ex);
+                    }
+
+                    game.score += astrd.score;
+                    astrd.delete = true;
+                };
+
+                // Extract each asteroid from objects[] and see if the bullet hit it.
+                for(var i=0,j=game.objects.length; i<j; i++) {
+                    var rock = game.objects[i];
+                    if (rock.name == 'asteroid') {
+                        var bulletPos = new P(new V(self.position.x, self.position.y), bul.points);
+                        var rockPos   = new P(new V(rock.position.x, rock.position.y), rock.points);
+                        var response  = new SAT.Response();
+                        var collided  = SAT.testPolygonPolygon(bulletPos, rockPos, response);
+                        if (collided) {
+                            this.delete = true; //delete bullet
+                            explode(rock);
+                            break;
+                        }
+                        bulletPos = rockPos = response = null;
+                    }
+                }
+
+                // Delete if it goes off screen
+                if (this.position.x < 0 || this.position.y < 0 || this.position.x > game.canvas.width || this.position.y > game.canvas.height) {
+                    this.delete = true;
+                }
+            };
+
+            bul.start = function() {
+                var posDelta = rotatePoint({x:0, y:-20}, {x:0,y:0}, ship.rotation*Math.PI/180);
+                this.position = {x: ship.position.x + (ship.width/2) + posDelta.x, y: ship.position.y + (ship.height/2) + posDelta.y};
+                this.rotation = ship.rotation;
+                this.velocity = {x:posDelta.x/2, y:posDelta.y/2};
+            };
+
+            return bul;
+        }
+
+        function Polygon(options) {
+
+            var name   = options.name || "Polygon";
+            var color  = options.color || "#ff0000";
+            var points = options.points || [{x:0, y:0},{x:10, y:10},{x:10, y:0},{x:0, y:0},{x:0, y:10},{x:10, y:10}];
+            var pos    = options.position || {x:0, y:0};
+            var vel    = options.velocity || {x:0, y:0};
+            var size   = options.size || {x:100, y:100};
+            var base   = options.base || {x:50, y:50};
+
+            var p = {
+                name: name,
+                position: pos,
+                velocity: vel,
+                color: color,
+                points: points,
+                rotation: 0,
+                base: base,
+                size: size,
+                newcnv: document.createElement("canvas"),
+                delete: false
+            };
+
+            p.newctx = p.newcnv.getContext("2d");
+            p.newcnv.width = p.size.x;
+            p.newcnv.height = p.size.y;
+
+            p.constructor.prototype.start = function() {};
+            p.constructor.prototype.update = function(ctx, delta) {};
+            p.draw = function(ctx) {
+                this.newctx.clearRect(0, 0, this.newcnv.width, this.newcnv.height);
+                this.newctx.save();
+                this.newctx.translate(this.base.x, this.base.y);
+                this.newctx.beginPath();
+                this.newctx.moveTo(this.points[0].x, this.points[0].y);
+                for (var i = 1; i < this.points.length; i++) {
+                    this.newctx.lineTo(this.points[i].x, this.points[i].y);
+                }
+                this.newctx.closePath();
+                this.newctx.shadowBlur = 5;
+                this.newctx.shadowColor = this.color;
+                this.newctx.strokeStyle = this.color;
+                this.newctx.stroke();
+                this.newctx.restore();
+
+                ctx.save();
+                ctx.translate(this.position.x, this.position.y); // 0
+                ctx.rotate(this.rotation*Math.PI/180);
+                ctx.drawImage(this.newcnv,-this.base.x,-this.base.y);
+                ctx.restore();
+            };
+
+            return p;
+        }
+
+        function Asteroid(rad){
+            var asteroid = new Polygon({
+                points: asteroidVertices(Math.max(Math.floor(rad/5), 3), rad),
+                color: "#666666",
+                name: "asteroid",
+                size: {x: 210, y: 210},
+                base: {x: 105, y: 105},
+                velocity: {x: (Math.random()*3-1)*Math.random()*3, y: (Math.random()*3-1)*Math.random()*3},
+                position: {x: Math.random()*500, y:Math.random()*1000}
+            });
+            asteroid.start = function() {
+                this.rotationSpeed = (Math.random()*2-1)*Math.random()*2;
+                this.radius = rad;
+                this.score = (80/this.radius)*1;
+            };
+            asteroid.update = function() {
+                this.position.x += this.velocity.x;
+                this.position.y += this.velocity.y;
+
+                // Teleporting on edges
+                if (this.position.x > game.canvas.width) {
+                    this.position.x -= game.canvas.width;
+                }
+                if (this.position.x < 0) {
+                    this.position.x += game.canvas.width;
+                }
+                if (this.position.y > game.canvas.height) {
+                    this.position.y -= game.canvas.height;
+                }
+                if (this.position.y < 0) {
+                    this.position.y += game.canvas.height;
+                }
+
+                // Set rotation
+                this.rotation += this.rotationSpeed;
+                if (this.rotation >= 360) {
+                    this.rotation -= 360;
+                }
+                if (this.rotation < 0) {
+                    this.rotation += 360;
+                }
+            };
+            return asteroid;
+        }
+
+        function updateHud() {
+            hudScore.forEach(function(el) {el.innerHTML = game.score;});
+            hudCountdown.forEach(function(el) {el.innerHTML = game.countdown;});
+            hudLives.innerHTML = game.lives;
+        }
+
+        function rotatePoint(p, center, angle) {
+            return {
+                x: ((p.x-center.x)*Math.cos(angle) - (p.y-center.y)*Math.sin(angle)) + center.x,
+                y: ((p.x-center.x)*Math.sin(angle) + (p.y-center.y)*Math.cos(angle)) + center.y
+            };
+        }
+
+        function spawnAsteroids() {
+            for (var i = 0; i < 8; i++) {
+                    var rock = new Asteroid(80); // changing the 80 radius will change the point system.
+                    game.objects.push(rock);
+            }
+        }
+
+        function asteroidVertices(count, rad) {
+            var p = [];
+            for (var i = 0; i < count; i++) {
+                p[i] = {
+                    x: (-Math.sin((360/count)*i*Math.PI/180) + Math.round(Math.random()*2-1)*Math.random()/3)*rad,
+                    y: (-Math.cos((360/count)*i*Math.PI/180) + Math.round(Math.random()*2-1)*Math.random()/3)*rad
+                };
+            }
+            return p;
+        }
+
+        function resizeCanvasToWindow() {
+            game.canvas.width = window.innerWidth;
+            game.canvas.height = window.innerHeight;
+        }
+
+        function init() {
+            game = new Game();
+            ship = new Ship();
+            game.objects.push(ship);
+            game.start();
+        }
+
+        window.addEventListener("keydown", function(event) {
+
+            // "ArrowLeft"
+            if (event.which === 37) {
+                if (ship.rotation == -337.5) {
+                    ship.rotation = 0;
+                } else {
+                    ship.rotation -= 22.5;
+                }
+            }
+
+            // "ArrowRight"
+            if (event.which === 39) {
+                if (ship.rotation == 337.5) {
+                    ship.rotation = 0;
+                } else {
+                    ship.rotation += 22.5;
+                }
+            }
+
+            // "ArrowUp"
+            if (event.which === 38) {
+                ship.accelerate = true;
+            }
+
+            // f key
+            if (event.which === 70) {
+                ship.fire();
+            }
+        }, false);
+
+        window.addEventListener("keyup", function(event) {
+
+            // "ArrowUp"
+            if (event.which === 38) {
+                ship.accelerate = false;
+            }
+        }, false);
+
+        window.addEventListener("resize", function(event) {
+            resizeCanvasToWindow();
+        }, false);
+
+    </script>
+</body>
+</html>
